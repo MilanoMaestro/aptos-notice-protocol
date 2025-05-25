@@ -1,0 +1,14 @@
+[package]
+name = "aptos-notice-protocol"
+version = "0.0.1"
+authors = ["MilanoM"]
+
+[addresses]
+notice = "a968e42da751c77c14b5f40e5ca4bf944b5d1ca0a8bbcaf31f93403aba95916a"
+tests = "0xC0FFEE"
+std = "0x1"
+aptos_std = "0x1"
+aptos_framework = "0x1"
+
+[dependencies]
+AptosFramework = { git = "https://github.com/aptos-labs/aptos-core.git", rev = "main", subdir = "aptos-move/framework/aptos-framework" }
