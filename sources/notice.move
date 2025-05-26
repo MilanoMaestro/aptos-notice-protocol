@@ -4,8 +4,8 @@ module notice::protocol {
     use std::vector;
     use std::string;
     use std::timestamp;
-
-    // Import Aptos framework modules for fungible token, object store, and metadata
+    
+    use aptos_framework::event;
     use aptos_framework::fungible_asset::{Self, FungibleStore, Metadata};
     use aptos_framework::primary_fungible_store;
     use aptos_framework::object::{Self, Object, ExtendRef};
@@ -18,6 +18,54 @@ module notice::protocol {
     const EINSUFFICIENT_BALANCE: u64 = 2;
     const EINVALID_NOTICE_RULE: u64 = 3;
     const EINVALID_NOTICE_REQUEST: u64 = 4;
+    const EALREADY_ACTION: u64 = 5;
+
+    #[event]
+    struct NoticeCreatedEvent has drop, store {
+        notice_idx: u64,
+        creator: address,
+        title: string::String,
+        contents: string::String,
+        timestamp: u64
+    }
+
+    #[event]
+    struct NoticeEditedEvent has drop, store {
+        notice_idx: u64,
+        editor: address,
+        title: string::String,
+        contents: string::String,
+        timestamp: u64
+    }
+
+    #[event]
+    struct NoticeViewedEvent has drop, store {
+        notice_idx: u64,
+        user: address,
+        rewarded: bool,
+        reward_amount: u64,
+        timestamp: u64
+    }
+
+    #[event]
+    struct NoticeLikedEvent has drop, store {
+        notice_idx: u64,
+        user: address,
+        rewarded: bool,
+        reward_amount: u64,
+        timestamp: u64
+    }
+
+    #[event]
+    struct NoticeCommentedEvent has drop, store {
+        notice_idx: u64,
+        user: address,
+        comment_text: string::String,
+        rewarded: bool,
+        reward_amount: u64,
+        timestamp: u64
+    }
+
     // Defines how rewards are distributed to participants
     // Additional custom rules can be added here in the future as needed
     enum RewardRule has copy, drop, store {
@@ -28,7 +76,7 @@ module notice::protocol {
 
     // Stores admin config for the notice module
     struct NoticeConfig has key {
-        admin: address
+        admin: address,
     }
 
     // Global store holding all notices
@@ -39,7 +87,6 @@ module notice::protocol {
 
     // Main Notice structure
     struct Notice has key, store {
-        id: u64,
         creator: address,
         title: string::String,
         contents: string::String,
@@ -88,7 +135,9 @@ module notice::protocol {
         assert!(!exists<NoticeConfig>(MODULE_ADDR), EALREADY_INITIALIZED);
         assert!(!exists<NoticeStore>(MODULE_ADDR), EALREADY_INITIALIZED);
 
-        move_to(signer, NoticeConfig { admin: MODULE_ADDR });
+        move_to(signer, NoticeConfig {
+            admin: MODULE_ADDR
+        });
 
         move_to(
             signer,
@@ -166,7 +215,6 @@ module notice::protocol {
         fungible_asset::deposit(reward_store, reward);
 
         let notice = Notice {
-            id: notice_idx,
             creator: caller_addr,
             title,
             contents,
@@ -190,6 +238,15 @@ module notice::protocol {
 
         vector::push_back(&mut notice_store.notices, notice);
         notice_store.next_notice_idx = notice_store.next_notice_idx + 1;
+
+        event::emit(NoticeCreatedEvent {
+            notice_idx,
+            creator: signer::address_of(caller),
+            title,
+            contents,
+            timestamp: timestamp::now_seconds()
+        });
+
     }
 
     #[view]
@@ -324,6 +381,14 @@ module notice::protocol {
         notice.like_max_winners = new_like_max_winners;
         notice.comment_max_winners = new_comment_max_winners;
         notice.interval_n = new_interval_n;
+
+        event::emit(NoticeEditedEvent {
+            notice_idx,
+            editor: signer::address_of(caller),
+            title: new_title,
+            contents: new_contents,
+            timestamp: timestamp::now_seconds()
+        });
     }
 
     // Utility function to check if a notice ID exists in a list of submitted notices
@@ -344,28 +409,18 @@ module notice::protocol {
         rule: RewardRule,
         current_index: u64,
         max_winners: u64,
-        interval_n: u64,
-        notice_idx: u64,
-        rewarded_list_mut: &mut vector<u64>,
-    ) acquires NoticeStore {
-        // Skip if already rewarded for this notice
-        if (contains_id(rewarded_list_mut, notice_idx)) {
-            return;
-        };
-
-        let notice_store = borrow_global_mut<NoticeStore>(MODULE_ADDR);
-        let notice_ref = vector::borrow_mut(&mut notice_store.notices, notice_idx);
-
+        notice_ref: &mut Notice
+    ): bool {
         let reward_store = notice_ref.reward_store;
         let extend_ref = &notice_ref.reward_token_extend_ref;
 
         let eligible =
             if (rule == RewardRule::FIFO) {
-                current_index <= max_winners
+                current_index < max_winners
             } else if (rule == RewardRule::INTERVAL) {
-                interval_n > 0 &&
-                current_index % interval_n == 0 &&
-                current_index/ interval_n <= max_winners
+                notice_ref.interval_n > 0 &&
+                current_index % notice_ref.interval_n == notice_ref.interval_n - 1 &&
+                (current_index / notice_ref.interval_n) < max_winners
             } else {
                 false
             };
@@ -381,87 +436,129 @@ module notice::protocol {
             let reward = fungible_asset::withdraw(&store_signer, reward_store, reward_amount);
             fungible_asset::deposit(user_store, reward);
 
-            vector::push_back(rewarded_list_mut, notice_idx);
+            return true
         };
+
+        false
     }
 
     public entry fun view_notice(
         user: &signer, notice_idx: u64
     ) acquires NoticeStore, NoticeActionStore {
-        let notice_store = borrow_global_mut<NoticeStore>(MODULE_ADDR);
-        let notice = &mut *vector::borrow_mut(&mut notice_store.notices, notice_idx);
+        let user_addr = signer::address_of(user);
 
         ensure_notice_action_store(user);
-        let action_store = borrow_global_mut<NoticeActionStore>(signer::address_of(user));
+        let action_store = borrow_global_mut<NoticeActionStore>(user_addr);
 
-        vector::push_back(&mut notice.view_list, signer::address_of(user));
+        assert!(
+            !contains_id(&action_store.view_list, notice_idx),
+            error::already_exists(EALREADY_ACTION)
+        );
+
+        let notice_store = borrow_global_mut<NoticeStore>(MODULE_ADDR);
+        let notice = &mut *vector::borrow_mut(&mut notice_store.notices, notice_idx);
         let count = vector::length(&notice.view_list);
 
-        distribute_reward(
+        let rewarded = distribute_reward(
             user,
             notice.reward_per_view,
             notice.view_rule,
             count,
             notice.view_max_winners,
-            notice.interval_n,
-            notice_idx,
-            &mut action_store.view_list,
+            notice
         );
+
+        vector::push_back(&mut action_store.view_list, notice_idx); 
+        vector::push_back(&mut notice.view_list, user_addr);
+
+        event::emit(NoticeViewedEvent {
+            notice_idx,
+            user: user_addr,
+            rewarded,
+            reward_amount: if (rewarded) { notice.reward_per_view } else { 0 },
+            timestamp: timestamp::now_seconds()
+        });
+        
     }
 
     public entry fun like_notice(
         user: &signer, notice_idx: u64
     ) acquires NoticeStore, NoticeActionStore {
+        let user_addr = signer::address_of(user);
+        ensure_notice_action_store(user);
+        let action_store = borrow_global_mut<NoticeActionStore>(user_addr);
+
+        assert!(
+            !contains_id(&action_store.like_list, notice_idx),
+            error::already_exists(EALREADY_ACTION)
+        );
+     
         let notice_store = borrow_global_mut<NoticeStore>(MODULE_ADDR);
         let notice = &mut *vector::borrow_mut(&mut notice_store.notices, notice_idx);
-
-        ensure_notice_action_store(user);
-        let action_store = borrow_global_mut<NoticeActionStore>(signer::address_of(user));
-
-
-        vector::push_back(&mut notice.like_list, signer::address_of(user));
         let count = vector::length(&notice.like_list);
 
-        distribute_reward(
+        let rewarded = distribute_reward(
             user,
             notice.reward_per_like,
             notice.like_rule,
             count,
             notice.like_max_winners,
-            notice.interval_n,
-            notice_idx,
-            &mut action_store.like_list
+            notice
         );
+
+        vector::push_back(&mut action_store.like_list, notice_idx);
+        vector::push_back(&mut notice.like_list, user_addr); 
+
+        event::emit(NoticeLikedEvent {
+            notice_idx,
+            user: user_addr,
+            rewarded,
+            reward_amount: if (rewarded) { notice.reward_per_like } else { 0 },
+            timestamp: timestamp::now_seconds()
+        });
     }
 
     public entry fun comment_notice(
         user: &signer, notice_idx: u64, comment_text: string::String
     ) acquires NoticeStore, NoticeActionStore {
+        let user_addr = signer::address_of(user);
+        ensure_notice_action_store(user);
+        let action_store = borrow_global_mut<NoticeActionStore>(user_addr);
         let notice_store = borrow_global_mut<NoticeStore>(MODULE_ADDR);
         let notice = &mut *vector::borrow_mut(&mut notice_store.notices, notice_idx);
-
-        ensure_notice_action_store(user);
-        let action_store = borrow_global_mut<NoticeActionStore>(signer::address_of(user));
-
-        let comment = CommentData { user: signer::address_of(user), text: comment_text };
-        vector::push_back(&mut notice.comment_list, comment);
         let count = vector::length(&notice.comment_list);
 
-        distribute_reward(
-            user,
-            notice.reward_per_comment,
-            notice.comment_rule,
-            count,
-            notice.comment_max_winners,
-            notice.interval_n,
+
+        let rewarded = false;
+        if (!contains_id(&action_store.comment_list, notice_idx)) {
+            rewarded = distribute_reward(
+                user,
+                notice.reward_per_comment,
+                notice.comment_rule,
+                count,
+                notice.comment_max_winners,
+                notice
+            );
+            vector::push_back(&mut action_store.comment_list, notice_idx);
+        };
+       
+        vector::push_back(&mut action_store.comment_list, notice_idx);
+        let comment = CommentData { user: user_addr, text: comment_text };  
+        vector::push_back(&mut notice.comment_list, comment);
+
+        event::emit(NoticeCommentedEvent {
             notice_idx,
-            &mut action_store.comment_list
-        );
+            user: user_addr,
+            rewarded,
+            comment_text,
+            reward_amount: if (rewarded) { notice.reward_per_comment } else { 0 },
+            timestamp: timestamp::now_seconds()
+        });
     }
 
     fun ensure_notice_action_store(user: &signer) {
-        let addr = signer::address_of(user);
-        if (!exists<NoticeActionStore>(addr)) {
+        let user_addr = signer::address_of(user);
+        if (!exists<NoticeActionStore>(user_addr)) {
             move_to(user, NoticeActionStore {
                 view_list: vector::empty<u64>(),
                 like_list: vector::empty<u64>(),

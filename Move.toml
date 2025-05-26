@@ -4,7 +4,7 @@ version = "0.0.1"
 authors = ["MilanoM"]
 
 [addresses]
-notice = "a968e42da751c77c14b5f40e5ca4bf944b5d1ca0a8bbcaf31f93403aba95916a"
+notice = "<deployed_module_address>"
 tests = "0xC0FFEE"
 std = "0x1"
 aptos_std = "0x1"
