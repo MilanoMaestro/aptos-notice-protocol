@@ -5,10 +5,11 @@ module notice::protocol {
     use std::string;
     use std::timestamp;
     
-    use aptos_framework::event;
     use aptos_framework::fungible_asset::{Self, FungibleStore, Metadata};
+    use aptos_framework::dispatchable_fungible_asset;
     use aptos_framework::primary_fungible_store;
     use aptos_framework::object::{Self, Object, ExtendRef};
+    use aptos_framework::event;
 
     // Address where the module is deployed
     const MODULE_ADDR: address = @notice;
@@ -19,6 +20,14 @@ module notice::protocol {
     const EINVALID_NOTICE_RULE: u64 = 3;
     const EINVALID_NOTICE_REQUEST: u64 = 4;
     const EALREADY_ACTION: u64 = 5;
+
+    // Defines how rewards are distributed to participants
+    // Additional custom rules can be added here in the future as needed
+    enum RewardRule has copy, drop, store {
+        FIFO, // reward given to first N noticers
+        INTERVAL //
+        // CUSTOM rules can be added later for more advanced reward strategies
+    }
 
     #[event]
     struct NoticeCreatedEvent has drop, store {
@@ -64,14 +73,6 @@ module notice::protocol {
         rewarded: bool,
         reward_amount: u64,
         timestamp: u64
-    }
-
-    // Defines how rewards are distributed to participants
-    // Additional custom rules can be added here in the future as needed
-    enum RewardRule has copy, drop, store {
-        FIFO, // reward given to first N noticers
-        INTERVAL //
-        // CUSTOM rules can be added later for more advanced reward strategies
     }
 
     // Stores admin config for the notice module
@@ -211,8 +212,8 @@ module notice::protocol {
         let balance = fungible_asset::balance(caller_store);
         assert!(balance >= total_amount, error::invalid_argument(EINSUFFICIENT_BALANCE));
 
-        let reward = fungible_asset::withdraw(caller, caller_store, total_amount);
-        fungible_asset::deposit(reward_store, reward);
+        let reward = dispatchable_fungible_asset::withdraw(caller, caller_store, total_amount);
+        dispatchable_fungible_asset::deposit(reward_store, reward);
 
         let notice = Notice {
             creator: caller_addr,
@@ -359,14 +360,14 @@ module notice::protocol {
 
         if (new_total > old_total) {
             let diff = new_total - old_total;
-            let additional = fungible_asset::withdraw(caller, user_store, diff);
-            fungible_asset::deposit(notice.reward_store, additional);
+            let additional = dispatchable_fungible_asset::withdraw(caller, user_store, diff);
+            dispatchable_fungible_asset::deposit(notice.reward_store, additional);
         } else if (old_total > new_total) {
             let refund =
-                fungible_asset::withdraw(
+                dispatchable_fungible_asset::withdraw(
                     &store_signer, notice.reward_store, old_total - new_total
                 );
-            fungible_asset::deposit(user_store, refund);
+            dispatchable_fungible_asset::deposit(user_store, refund);
         };
 
         notice.title = new_title;
@@ -433,8 +434,8 @@ module notice::protocol {
                 );
 
             let store_signer = object::generate_signer_for_extending(extend_ref);
-            let reward = fungible_asset::withdraw(&store_signer, reward_store, reward_amount);
-            fungible_asset::deposit(user_store, reward);
+            let reward = dispatchable_fungible_asset::withdraw(&store_signer, reward_store, reward_amount);
+            dispatchable_fungible_asset::deposit(user_store, reward);
 
             return true
         };
@@ -591,14 +592,14 @@ module notice::protocol {
         let remaining = fungible_asset::balance(notice_ref.reward_store);
         if (remaining > 0) {
             let refund =
-                fungible_asset::withdraw(
+                dispatchable_fungible_asset::withdraw(
                     &store_signer, notice_ref.reward_store, remaining
                 );
             let to_store =
                 primary_fungible_store::ensure_primary_store_exists(
                     notice_ref.creator, reward_token
                 );
-            fungible_asset::deposit(to_store, refund);
+            dispatchable_fungible_asset::deposit(to_store, refund);
         };
     }
 }
